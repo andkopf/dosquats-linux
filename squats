@@ -32,7 +32,10 @@ DEFAULTS = {
     "overlay_timeout": 45,       # seconds before the overlay dismisses itself
     "skip_next": False,
     "skip_when_locked": True,
+    "tray_icon": "alarm-symbolic",
 }
+
+TRAY = "dosquats-tray"
 
 
 # ---------------------------------------------------------------- config ----
@@ -277,6 +280,47 @@ def cmd_uninstall(_cfg, _args):
     print(f"uninstalled. Config left at {CONFIG_FILE}")
 
 
+def cmd_tray_install(cfg, _args):
+    tray_bin = SELF.parent / "squats-tray"
+    if not tray_bin.exists():
+        die(f"missing {tray_bin}")
+    UNIT_DIR.mkdir(parents=True, exist_ok=True)
+    (UNIT_DIR / f"{TRAY}.service").write_text(f"""\
+[Unit]
+Description=DoSquats tray icon
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart={tray_bin}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
+""")
+    systemctl("daemon-reload")
+    systemctl("enable", "--now", f"{TRAY}.service")
+    save_config(cfg)
+    print("tray icon installed and started.")
+    print("Needs the AppIndicator GNOME extension:")
+    print("  sudo dnf install gnome-shell-extension-appindicator")
+    print("If no icon appears, log out and back in once to activate it.")
+
+
+def cmd_tray_uninstall(_cfg, _args):
+    systemctl("disable", "--now", f"{TRAY}.service", check=False)
+    (UNIT_DIR / f"{TRAY}.service").unlink(missing_ok=True)
+    systemctl("daemon-reload")
+    print("tray icon removed (reminders still run via the timer)")
+
+
+def cmd_tray(_cfg, _args):
+    tray_bin = SELF.parent / "squats-tray"
+    os.execv(str(tray_bin), [str(tray_bin)])
+
+
 def cmd_on(cfg, _args):
     cfg["enabled"] = True
     save_config(cfg)
@@ -368,6 +412,8 @@ def cmd_remind(cfg, _args):
 
 COMMANDS = {
     "install": cmd_install, "uninstall": cmd_uninstall,
+    "tray": cmd_tray, "tray-install": cmd_tray_install,
+    "tray-uninstall": cmd_tray_uninstall,
     "on": cmd_on, "off": cmd_off, "skip": cmd_skip,
     "every": cmd_every, "reps": cmd_reps, "exercise": cmd_exercise,
     "style": cmd_style, "sound": cmd_sound,
@@ -379,6 +425,9 @@ squats — clock-aligned exercise reminders for GNOME/Fedora
 
   squats install            set up and start the systemd user timer
   squats uninstall          remove the timer (config is kept)
+
+  squats tray-install       add the panel icon (needs AppIndicator extension)
+  squats tray-uninstall     remove the panel icon
 
   squats status             current settings and next fire time
   squats test               show a reminder right now

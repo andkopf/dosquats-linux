@@ -39,7 +39,29 @@ squats sound on|off
 ```
 
 Config lives in `~/.config/dosquats/config.json`; every key is editable there too,
-including `overlay_timeout`, `sound_file`, and `skip_when_locked`.
+including `overlay_timeout`, `sound_file`, `skip_when_locked`, and `tray_icon`.
+
+## Panel icon (the menu bar equivalent)
+
+GNOME removed the system tray in 3.26 and never replaced it, so the icon needs
+the AppIndicator extension:
+
+```
+sudo dnf install gnome-shell-extension-appindicator
+./squats tray-install
+```
+
+Log out and back in once if no icon appears — that's the extension activating,
+not the app failing.
+
+You get a 🏋️ panel icon whose menu mirrors the macOS one: next fire time,
+enable/disable, skip next, interval, overlay/banner, sound, and "Remind me now".
+
+The tray is a **control panel, not a scheduler** — the systemd timer still fires
+the reminders. Both read and write the same config file and the tray watches it
+for changes, so the CLI and the menu stay in sync in both directions.
+
+`./squats tray-uninstall` removes the icon; reminders keep running.
 
 ## How it maps to the original
 
@@ -50,7 +72,7 @@ including `overlay_timeout`, `sound_file`, and `skip_when_locked`.
 | Full-screen blocking overlay | GTK4 fullscreen window, dismiss with Esc/Space/click |
 | Banner style | `notify-send` |
 | Sound | `paplay` on a freedesktop sound |
-| Menu bar icon + toggles | **Not ported** — GNOME has no native tray. Use the CLI. |
+| Menu bar icon + toggles | Panel icon via AppIndicator — see below |
 | Launch at login | `systemctl --user enable` |
 
 ### Interval alignment
