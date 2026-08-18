@@ -54,8 +54,13 @@ sudo dnf install gnome-shell-extension-appindicator
 Log out and back in once if no icon appears — that's the extension activating,
 not the app failing.
 
-You get a 🏋️ panel icon whose menu mirrors the macOS one: next fire time,
+You get a barbell panel icon whose menu mirrors the macOS one: next fire time,
 enable/disable, skip next, interval, overlay/banner, sound, and "Remind me now".
+
+`tray-install` also copies `icons/dosquats-symbolic.svg` into your user icon
+theme, which is what lets GNOME recolor it for light and dark panels. Set
+`tray_icon` in the config to any other themed icon name if you'd rather — e.g.
+`emoji-activities-symbolic` (a ball) or `alarm-symbolic`.
 
 The tray is a **control panel, not a scheduler** — the systemd timer still fires
 the reminders. Both read and write the same config file and the tray watches it

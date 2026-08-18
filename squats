@@ -32,10 +32,11 @@ DEFAULTS = {
     "overlay_timeout": 45,       # seconds before the overlay dismisses itself
     "skip_next": False,
     "skip_when_locked": True,
-    "tray_icon": "alarm-symbolic",
+    "tray_icon": "dosquats-symbolic",
 }
 
 TRAY = "dosquats-tray"
+ICON_NAME = "dosquats-symbolic"
 
 
 # ---------------------------------------------------------------- config ----
@@ -280,10 +281,33 @@ def cmd_uninstall(_cfg, _args):
     print(f"uninstalled. Config left at {CONFIG_FILE}")
 
 
+def install_icon():
+    """Copy the barbell into the user icon theme so GNOME recolors it properly.
+
+    Installing it as a themed icon (rather than pointing at a file path) is what
+    lets the shell tint it for light and dark panels.
+    """
+    src = SELF.parent / "icons" / f"{ICON_NAME}.svg"
+    if not src.exists():
+        warn(f"icon not found at {src} — falling back to a stock icon")
+        return False
+    data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    hicolor = data_home / "icons" / "hicolor"
+    dest_dir = hicolor / "scalable" / "apps"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dest_dir / src.name)
+    if shutil.which("gtk-update-icon-cache"):
+        subprocess.run(["gtk-update-icon-cache", "-qtf", str(hicolor)],
+                       check=False, capture_output=True)
+    return True
+
+
 def cmd_tray_install(cfg, _args):
     tray_bin = SELF.parent / "squats-tray"
     if not tray_bin.exists():
         die(f"missing {tray_bin}")
+    if install_icon() and cfg.get("tray_icon") == "alarm-symbolic":
+        cfg["tray_icon"] = ICON_NAME       # upgrade pre-barbell configs
     UNIT_DIR.mkdir(parents=True, exist_ok=True)
     (UNIT_DIR / f"{TRAY}.service").write_text(f"""\
 [Unit]

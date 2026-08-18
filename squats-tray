@@ -84,13 +84,23 @@ def next_fire_label():
     return f"Next: {when_str} (in {left}s)"
 
 
+def resolve_icon(preferred):
+    """First installed icon name that the theme can actually resolve."""
+    theme = Gtk.IconTheme.get_default()
+    for name in (preferred, "dosquats-symbolic",
+                 "emoji-activities-symbolic", "alarm-symbolic"):
+        if name and theme.has_icon(name):
+            return name
+    return "alarm-symbolic"
+
+
 class Tray:
     def __init__(self):
         self.cfg = squatslib.load_config()
         self.updating = False       # guards against handler/refresh feedback loops
 
         self.indicator = Indicator.Indicator.new(
-            "dosquats", self.cfg.get("tray_icon", "alarm-symbolic"),
+            "dosquats", resolve_icon(self.cfg.get("tray_icon")),
             Indicator.IndicatorCategory.APPLICATION_STATUS)
         self.indicator.set_status(Indicator.IndicatorStatus.ACTIVE)
         self.indicator.set_title("DoSquats")
