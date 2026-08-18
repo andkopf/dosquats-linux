@@ -1,0 +1,408 @@
+#!/usr/bin/python3
+"""DoSquats for Linux — clock-aligned exercise reminders via systemd + GTK4.
+
+A Fedora/GNOME equivalent of https://github.com/joeljani/DoSquats (macOS/Swift).
+The systemd user timer does the scheduling; this script renders the reminder
+and manages configuration.
+"""
+
+import fcntl
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+APP = "dosquats"
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / APP
+CONFIG_FILE = CONFIG_DIR / "config.json"
+UNIT_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "systemd" / "user"
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+SELF = Path(__file__).resolve()
+
+DEFAULTS = {
+    "enabled": True,
+    "interval_minutes": 20,
+    "reps": 20,
+    "exercise": "squats",
+    "style": "overlay",          # "overlay" (blocking) or "banner" (notification)
+    "sound": True,
+    "sound_file": "/usr/share/sounds/freedesktop/stereo/complete.oga",
+    "overlay_timeout": 45,       # seconds before the overlay dismisses itself
+    "skip_next": False,
+    "skip_when_locked": True,
+}
+
+
+# ---------------------------------------------------------------- config ----
+
+def load_config():
+    cfg = dict(DEFAULTS)
+    if CONFIG_FILE.exists():
+        try:
+            cfg.update(json.loads(CONFIG_FILE.read_text()))
+        except (json.JSONDecodeError, OSError) as e:
+            warn(f"could not read {CONFIG_FILE}: {e} — using defaults")
+    return cfg
+
+
+def save_config(cfg):
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2) + "\n")
+
+
+def warn(msg):
+    print(f"squats: {msg}", file=sys.stderr)
+
+
+def die(msg, code=1):
+    warn(msg)
+    sys.exit(code)
+
+
+# ----------------------------------------------------------- reminder UI ----
+
+def session_locked():
+    """True if the GNOME screen is locked (so we don't stack overlays)."""
+    try:
+        out = subprocess.run(
+            ["gdbus", "call", "--session", "--dest", "org.gnome.ScreenSaver",
+             "--object-path", "/org/gnome/ScreenSaver",
+             "--method", "org.gnome.ScreenSaver.GetActive"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return "true" in out.stdout.lower()
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def play_sound(cfg):
+    if not cfg["sound"]:
+        return
+    path = cfg.get("sound_file") or ""
+    if path and Path(path).exists() and shutil.which("paplay"):
+        subprocess.Popen(["paplay", path],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif shutil.which("canberra-gtk-play"):
+        subprocess.Popen(["canberra-gtk-play", "-i", "complete"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def message(cfg):
+    return f"Do {cfg['reps']} {cfg['exercise']}"
+
+
+def show_banner(cfg):
+    subprocess.run([
+        "notify-send",
+        "-a", "DoSquats",
+        "-i", "alarm-symbolic",
+        "-u", "normal",
+        "-t", str(max(cfg["overlay_timeout"], 5) * 1000),
+        "🏋️ Time to move",
+        message(cfg),
+    ], check=False)
+
+
+def show_overlay(cfg):
+    import gi
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Gtk, Gdk, GLib
+
+    timeout = max(int(cfg["overlay_timeout"]), 3)
+    css = b"""
+    window.dosquats { background-color: #101014; }
+    .headline { font-size: 96px; font-weight: 800; color: #f5f5f7; }
+    .emoji    { font-size: 140px; }
+    .hint     { font-size: 20px; color: #8e8e93; }
+    progressbar.countdown trough { min-height: 6px; background: #2c2c30; }
+    progressbar.countdown progress { min-height: 6px; background: #ff9f0a; }
+    """
+
+    def on_activate(app):
+        win = Gtk.ApplicationWindow(application=app)
+        win.add_css_class("dosquats")
+        win.set_decorated(False)
+        win.fullscreen()
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
+        box.set_valign(Gtk.Align.CENTER)
+        box.set_halign(Gtk.Align.CENTER)
+
+        emoji = Gtk.Label(label="🏋️")
+        emoji.add_css_class("emoji")
+        headline = Gtk.Label(label=message(cfg))
+        headline.add_css_class("headline")
+        hint = Gtk.Label(label="Esc, Space or click to dismiss")
+        hint.add_css_class("hint")
+
+        bar = Gtk.ProgressBar()
+        bar.add_css_class("countdown")
+        bar.set_fraction(1.0)
+        bar.set_size_request(420, -1)
+        bar.set_halign(Gtk.Align.CENTER)
+
+        for w in (emoji, headline, bar, hint):
+            box.append(w)
+        win.set_child(box)
+
+        state = {"left": float(timeout)}
+
+        def tick():
+            state["left"] -= 0.1
+            if state["left"] <= 0:
+                win.close()
+                return GLib.SOURCE_REMOVE
+            bar.set_fraction(state["left"] / timeout)
+            return GLib.SOURCE_CONTINUE
+
+        GLib.timeout_add(100, tick)
+
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", lambda _c, keyval, *_a: (
+            win.close() if keyval in (Gdk.KEY_Escape, Gdk.KEY_space,
+                                      Gdk.KEY_Return, Gdk.KEY_q) else None,
+            True)[1])
+        win.add_controller(keys)
+
+        click = Gtk.GestureClick()
+        click.connect("pressed", lambda *_a: win.close())
+        win.add_controller(click)
+
+        win.present()
+
+        provider = Gtk.CssProvider()
+        provider.load_from_string(css.decode())
+        Gtk.StyleContext.add_provider_for_display(
+            win.get_display(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    app = Gtk.Application(application_id="io.github.dosquats.Reminder")
+    app.connect("activate", on_activate)
+    app.run([])
+
+
+def remind(cfg, forced=False):
+    if not (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")):
+        die("no graphical session — nothing to show")
+
+    if not forced:
+        if not cfg["enabled"]:
+            return
+        if cfg["skip_next"]:
+            cfg["skip_next"] = False
+            save_config(cfg)
+            print("skipped this reminder (skip_next was set)")
+            return
+        if cfg["skip_when_locked"] and session_locked():
+            print("screen locked — reminder skipped")
+            return
+
+    # One reminder at a time, even if a previous overlay is still up.
+    lock_path = RUNTIME_DIR / f"{APP}.lock"
+    lock = open(lock_path, "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("a reminder is already on screen")
+        return
+
+    play_sound(cfg)
+    if cfg["style"] == "banner":
+        show_banner(cfg)
+    else:
+        show_overlay(cfg)
+
+
+# ------------------------------------------------------------- scheduling ----
+
+def on_calendar(minutes):
+    """systemd OnCalendar= expression aligned to the wall clock."""
+    if minutes >= 60:
+        return "*-*-* *:00:00"
+    return f"*:0/{minutes}"
+
+
+def systemctl(*args, check=True):
+    return subprocess.run(["systemctl", "--user", *args], check=check)
+
+
+def write_units(cfg):
+    UNIT_DIR.mkdir(parents=True, exist_ok=True)
+    (UNIT_DIR / f"{APP}.service").write_text(f"""\
+[Unit]
+Description=DoSquats exercise reminder
+
+[Service]
+Type=oneshot
+ExecStart={SELF} remind
+""")
+    (UNIT_DIR / f"{APP}.timer").write_text(f"""\
+[Unit]
+Description=DoSquats reminder every {cfg['interval_minutes']} minutes
+
+[Timer]
+OnCalendar={on_calendar(cfg['interval_minutes'])}
+AccuracySec=1s
+Persistent=true
+Unit={APP}.service
+
+[Install]
+WantedBy=timers.target
+""")
+    systemctl("daemon-reload")
+
+
+def reschedule(cfg):
+    write_units(cfg)
+    systemctl("restart", f"{APP}.timer", check=False)
+
+
+# --------------------------------------------------------------- commands ----
+
+def cmd_install(cfg, _args):
+    save_config(cfg)
+    write_units(cfg)
+    systemctl("enable", "--now", f"{APP}.timer")
+    print(f"installed — reminders every {cfg['interval_minutes']} min, "
+          f"style: {cfg['style']}")
+    print("starts automatically at login. `squats status` to check.")
+
+
+def cmd_uninstall(_cfg, _args):
+    systemctl("disable", "--now", f"{APP}.timer", check=False)
+    for unit in (f"{APP}.timer", f"{APP}.service"):
+        (UNIT_DIR / unit).unlink(missing_ok=True)
+    systemctl("daemon-reload")
+    print(f"uninstalled. Config left at {CONFIG_FILE}")
+
+
+def cmd_on(cfg, _args):
+    cfg["enabled"] = True
+    save_config(cfg)
+    print("reminders enabled")
+
+
+def cmd_off(cfg, _args):
+    cfg["enabled"] = False
+    save_config(cfg)
+    print("reminders disabled (timer still runs; `squats on` to resume)")
+
+
+def cmd_skip(cfg, _args):
+    cfg["skip_next"] = True
+    save_config(cfg)
+    print("next reminder will be skipped")
+
+
+def cmd_every(cfg, args):
+    if not args:
+        die("usage: squats every <minutes>  (5–60, in steps of 5)")
+    try:
+        minutes = int(args[0])
+    except ValueError:
+        die(f"not a number: {args[0]}")
+    if not 5 <= minutes <= 60 or minutes % 5:
+        die("interval must be 5–60 minutes in steps of 5")
+    cfg["interval_minutes"] = minutes
+    save_config(cfg)
+    reschedule(cfg)
+    print(f"interval set to {minutes} min ({on_calendar(minutes)})")
+    if 60 % minutes:
+        warn(f"{minutes} does not divide 60 — alignment restarts each hour "
+             f"(:00, :{minutes:02d}, :{2 * minutes:02d}, …)")
+
+
+def cmd_reps(cfg, args):
+    if not args:
+        die("usage: squats reps <count>")
+    cfg["reps"] = int(args[0])
+    save_config(cfg)
+    print(f"reps set to {cfg['reps']}")
+
+
+def cmd_exercise(cfg, args):
+    if not args:
+        die("usage: squats exercise <name>")
+    cfg["exercise"] = " ".join(args)
+    save_config(cfg)
+    print(f"exercise set to {cfg['exercise']}")
+
+
+def cmd_style(cfg, args):
+    if not args or args[0] not in ("overlay", "banner"):
+        die("usage: squats style overlay|banner")
+    cfg["style"] = args[0]
+    save_config(cfg)
+    print(f"style set to {cfg['style']}")
+
+
+def cmd_sound(cfg, args):
+    if not args or args[0] not in ("on", "off"):
+        die("usage: squats sound on|off")
+    cfg["sound"] = args[0] == "on"
+    save_config(cfg)
+    print(f"sound {'on' if cfg['sound'] else 'off'}")
+
+
+def cmd_status(cfg, _args):
+    state = "enabled" if cfg["enabled"] else "disabled"
+    print(f"DoSquats: {state} — {message(cfg)} every "
+          f"{cfg['interval_minutes']} min, style: {cfg['style']}, "
+          f"sound: {'on' if cfg['sound'] else 'off'}")
+    if cfg["skip_next"]:
+        print("next reminder: skipped")
+    print()
+    sys.stdout.flush()
+    subprocess.run(["systemctl", "--user", "list-timers", f"{APP}.timer",
+                    "--no-pager"], check=False)
+
+
+def cmd_test(cfg, _args):
+    remind(cfg, forced=True)
+
+
+def cmd_remind(cfg, _args):
+    remind(cfg)
+
+
+COMMANDS = {
+    "install": cmd_install, "uninstall": cmd_uninstall,
+    "on": cmd_on, "off": cmd_off, "skip": cmd_skip,
+    "every": cmd_every, "reps": cmd_reps, "exercise": cmd_exercise,
+    "style": cmd_style, "sound": cmd_sound,
+    "status": cmd_status, "test": cmd_test, "remind": cmd_remind,
+}
+
+USAGE = """\
+squats — clock-aligned exercise reminders for GNOME/Fedora
+
+  squats install            set up and start the systemd user timer
+  squats uninstall          remove the timer (config is kept)
+
+  squats status             current settings and next fire time
+  squats test               show a reminder right now
+  squats on | off           enable / disable reminders
+  squats skip               skip the next reminder only
+
+  squats every <minutes>    5–60, in steps of 5
+  squats reps <count>       how many reps to ask for
+  squats exercise <name>    e.g. pushups, stretches
+  squats style overlay|banner
+  squats sound on|off
+"""
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help", "help"):
+        print(USAGE, end="")
+        return
+    cmd = COMMANDS.get(args[0])
+    if not cmd:
+        die(f"unknown command: {args[0]}\n\n{USAGE}")
+    cmd(load_config(), args[1:])
+
+
+if __name__ == "__main__":
+    main()
