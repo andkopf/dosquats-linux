@@ -48,6 +48,57 @@ squatslib = importlib.util.module_from_spec(
 _loader.exec_module(squatslib)
 
 INTERVALS = [5, 10, 15, 20, 30, 45, 60]
+REPS = [5, 10, 15, 20, 25, 30, 40, 50]
+EXERCISES = ["squats", "pushups", "lunges", "stretches"]
+
+
+def ask_number(title, prompt, value, lower, upper):
+    """Modal spin-button prompt for a rep count outside the presets."""
+    dlg = Gtk.Dialog(title=title)
+    dlg.add_button("Cancel", Gtk.ResponseType.CANCEL)
+    dlg.add_button("OK", Gtk.ResponseType.OK)
+    dlg.set_default_response(Gtk.ResponseType.OK)
+
+    box = dlg.get_content_area()
+    box.set_spacing(8)
+    for side in ("top", "bottom", "start", "end"):
+        getattr(box, f"set_margin_{side}")(12)
+    box.add(Gtk.Label(label=prompt))
+
+    spin = Gtk.SpinButton(
+        adjustment=Gtk.Adjustment(value=value, lower=lower, upper=upper,
+                                  step_increment=1, page_increment=5),
+        numeric=True)
+    spin.set_activates_default(True)
+    box.add(spin)
+
+    dlg.show_all()
+    result = int(spin.get_value()) if dlg.run() == Gtk.ResponseType.OK else None
+    dlg.destroy()
+    return result
+
+
+def ask_text(title, prompt, value):
+    dlg = Gtk.Dialog(title=title)
+    dlg.add_button("Cancel", Gtk.ResponseType.CANCEL)
+    dlg.add_button("OK", Gtk.ResponseType.OK)
+    dlg.set_default_response(Gtk.ResponseType.OK)
+
+    box = dlg.get_content_area()
+    box.set_spacing(8)
+    for side in ("top", "bottom", "start", "end"):
+        getattr(box, f"set_margin_{side}")(12)
+    box.add(Gtk.Label(label=prompt))
+
+    entry = Gtk.Entry(text=value)
+    entry.set_activates_default(True)
+    box.add(entry)
+
+    dlg.show_all()
+    ok = dlg.run() == Gtk.ResponseType.OK
+    result = entry.get_text().strip() or None
+    dlg.destroy()
+    return result if ok else None
 
 
 def next_fire_label():
@@ -146,6 +197,41 @@ class Tray:
             self.interval_items[mins] = item
         interval_root.set_submenu(interval_menu)
         menu.append(interval_root)
+        self.interval_root = interval_root
+
+        # Reps submenu — presets plus a custom prompt
+        self.reps_root = Gtk.MenuItem(label="Reps")
+        reps_menu = Gtk.Menu()
+        self.reps_items = {}
+        group = []
+        for count in REPS:
+            item = Gtk.RadioMenuItem.new_with_label(group, str(count))
+            group = item.get_group()
+            item.connect("toggled", self.on_reps, count)
+            reps_menu.append(item)
+            self.reps_items[count] = item
+        self.reps_custom = Gtk.RadioMenuItem.new_with_label(group, "Custom…")
+        self.reps_custom.connect("toggled", self.on_reps_custom)
+        reps_menu.append(self.reps_custom)
+        self.reps_root.set_submenu(reps_menu)
+        menu.append(self.reps_root)
+
+        # Exercise submenu — presets plus a custom prompt
+        self.exercise_root = Gtk.MenuItem(label="Exercise")
+        exercise_menu = Gtk.Menu()
+        self.exercise_items = {}
+        group = []
+        for name in EXERCISES:
+            item = Gtk.RadioMenuItem.new_with_label(group, name.capitalize())
+            group = item.get_group()
+            item.connect("toggled", self.on_exercise, name)
+            exercise_menu.append(item)
+            self.exercise_items[name] = item
+        self.exercise_custom = Gtk.RadioMenuItem.new_with_label(group, "Custom…")
+        self.exercise_custom.connect("toggled", self.on_exercise_custom)
+        exercise_menu.append(self.exercise_custom)
+        self.exercise_root.set_submenu(exercise_menu)
+        menu.append(self.exercise_root)
 
         # Style submenu
         style_root = Gtk.MenuItem(label="Style")
@@ -192,9 +278,31 @@ class Tray:
             interval = self.cfg["interval_minutes"]
             if interval in self.interval_items:
                 self.interval_items[interval].set_active(True)
+            self.interval_root.set_label(f"Interval ({interval} min)")
+
             style = self.cfg.get("style", "overlay")
             if style in self.style_items:
                 self.style_items[style].set_active(True)
+
+            # Values set from the CLI may fall outside the presets, in which
+            # case the Custom… entry carries them.
+            reps = self.cfg["reps"]
+            self.reps_root.set_label(f"Reps ({reps})")
+            if reps in self.reps_items:
+                self.reps_custom.set_label("Custom…")
+                self.reps_items[reps].set_active(True)
+            else:
+                self.reps_custom.set_label(f"Custom… ({reps})")
+                self.reps_custom.set_active(True)
+
+            exercise = self.cfg["exercise"]
+            self.exercise_root.set_label(f"Exercise ({exercise})")
+            if exercise in self.exercise_items:
+                self.exercise_custom.set_label("Custom…")
+                self.exercise_items[exercise].set_active(True)
+            else:
+                self.exercise_custom.set_label(f"Custom… ({exercise})")
+                self.exercise_custom.set_active(True)
         finally:
             self.updating = False
         return GLib.SOURCE_CONTINUE
@@ -235,6 +343,40 @@ class Tray:
         self.cfg["interval_minutes"] = mins
         self.save()
         squatslib.reschedule(self.cfg)
+        self.refresh()
+
+    def on_reps(self, item, count):
+        if self.updating or not item.get_active():
+            return
+        self.cfg["reps"] = count
+        self.save()
+        self.refresh()
+
+    def on_reps_custom(self, item):
+        if self.updating or not item.get_active():
+            return
+        value = ask_number("DoSquats", "How many reps per reminder?",
+                           self.cfg["reps"], 1, 500)
+        if value:
+            self.cfg["reps"] = value
+            self.save()
+        self.refresh()      # also snaps the radio back if the user cancelled
+
+    def on_exercise(self, item, name):
+        if self.updating or not item.get_active():
+            return
+        self.cfg["exercise"] = name
+        self.save()
+        self.refresh()
+
+    def on_exercise_custom(self, item):
+        if self.updating or not item.get_active():
+            return
+        value = ask_text("DoSquats", "What should the reminder ask for?",
+                         self.cfg["exercise"])
+        if value:
+            self.cfg["exercise"] = value
+            self.save()
         self.refresh()
 
     def on_style(self, item, value):

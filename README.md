@@ -55,7 +55,12 @@ Log out and back in once if no icon appears — that's the extension activating,
 not the app failing.
 
 You get a barbell panel icon whose menu mirrors the macOS one: next fire time,
-enable/disable, skip next, interval, overlay/banner, sound, and "Remind me now".
+enable/disable, skip next, interval, reps, exercise, overlay/banner, sound, and
+"Remind me now".
+
+Reps and exercise offer presets plus a **Custom…** entry for anything else. The
+submenu headers show the current value (`Reps (20)`), and a value set from the
+CLI that isn't a preset shows up on the Custom… entry rather than being lost.
 
 `tray-install` also copies `icons/dosquats-symbolic.svg` into your user icon
 theme, which is what lets GNOME recolor it for light and dark panels. Set
