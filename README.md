@@ -30,6 +30,8 @@ squats status             current settings and next fire time
 squats test               show a reminder right now
 squats on | off           enable / disable reminders
 squats skip               skip the next reminder only
+squats snooze [minutes]   quiet now, remind again later
+squats snooze cancel      drop a pending snooze
 
 squats every <minutes>    5–60, in steps of 5
 squats offset <minutes>   shift off the clock, e.g. -5 or +5
@@ -52,6 +54,17 @@ reminder to `:55` — before the call, not on top of it — and `+5` moves it to
 The offset rewrites the timer's `OnCalendar=` as an explicit minute list, so a
 negative offset wraps into the previous hour instead of drifting.
 
+## Snooze
+
+Reminders carry snooze buttons — on the overlay as buttons (or keys `1`/`2`),
+on a notification banner as actions. Snoozing does two things: it silences the
+regular reminders that fall inside the window, and it schedules one reminder for
+the end of it via a transient systemd timer. Defaults are 10 and 35 minutes —
+long enough to see out the rest of a meeting — and they're the `snooze_options`
+list in the config.
+
+`squats status` shows a pending snooze, and `squats snooze cancel` drops it.
+
 ## Panel icon (the menu bar equivalent)
 
 GNOME removed the system tray in 3.26 and never replaced it, so the icon needs
@@ -66,8 +79,8 @@ Log out and back in once if no icon appears — that's the extension activating,
 not the app failing.
 
 You get a barbell panel icon whose menu mirrors the macOS one: next fire time,
-enable/disable, skip next, interval, offset, reps, exercise, overlay/banner,
-sound, and "Remind me now".
+enable/disable, skip next, snooze, interval, offset, reps, exercise,
+overlay/banner, sound, and "Remind me now".
 
 Reps and exercise offer presets plus a **Custom…** entry for anything else. The
 submenu headers show the current value (`Reps (20)`), and a value set from the

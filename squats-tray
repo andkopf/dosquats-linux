@@ -102,8 +102,20 @@ def ask_text(title, prompt, value):
     return result if ok else None
 
 
-def next_fire_label():
+def in_words(seconds):
+    if seconds >= 3600:
+        return f"in {seconds // 3600}h {seconds % 3600 // 60}min"
+    if seconds >= 60:
+        return f"in {seconds // 60} min"
+    return f"in {seconds}s"
+
+
+def next_fire_label(cfg):
     """'Next: 14:20 (in 9 min)' from the systemd timer's own schedule."""
+    until = squatslib.snoozed_until(cfg)
+    if until:
+        return (f"Snoozed to {time.strftime('%H:%M', time.localtime(until))} "
+                f"({in_words(max(0, int(until - time.time())))})")
     try:
         out = subprocess.run(
             ["systemctl", "--user", "show", "dosquats.timer",
@@ -129,11 +141,7 @@ def next_fire_label():
 
     left = max(0, int(when - time.time()))
     when_str = time.strftime("%H:%M", time.localtime(when))
-    if left >= 3600:
-        return f"Next: {when_str} (in {left // 3600}h {left % 3600 // 60}min)"
-    if left >= 60:
-        return f"Next: {when_str} (in {left // 60} min)"
-    return f"Next: {when_str} (in {left}s)"
+    return f"Next: {when_str} ({in_words(left)})"
 
 
 def resolve_icon(preferred):
@@ -181,6 +189,24 @@ class Tray:
         self.skip_item = Gtk.CheckMenuItem(label="Skip next reminder")
         self.skip_item.connect("toggled", self.on_skip)
         menu.append(self.skip_item)
+
+        # Snooze submenu — the presets the reminder itself offers, plus a
+        # free-form one and a way out.
+        self.snooze_root = Gtk.MenuItem(label="Snooze")
+        snooze_menu = Gtk.Menu()
+        for mins in squatslib.snooze_options(self.cfg) or [10, 35]:
+            item = Gtk.MenuItem(label=f"For {mins} min")
+            item.connect("activate", self.on_snooze, mins)
+            snooze_menu.append(item)
+        custom = Gtk.MenuItem(label="For…")
+        custom.connect("activate", self.on_snooze_custom)
+        snooze_menu.append(custom)
+        snooze_menu.append(Gtk.SeparatorMenuItem())
+        self.snooze_cancel = Gtk.MenuItem(label="Cancel snooze")
+        self.snooze_cancel.connect("activate", self.on_snooze_cancel)
+        snooze_menu.append(self.snooze_cancel)
+        self.snooze_root.set_submenu(snooze_menu)
+        menu.append(self.snooze_root)
 
         menu.append(Gtk.SeparatorMenuItem())
 
@@ -289,10 +315,18 @@ class Tray:
         self.cfg = squatslib.load_config()
         self.updating = True
         try:
-            self.next_item.set_label(next_fire_label())
+            self.next_item.set_label(next_fire_label(self.cfg))
             self.enabled_item.set_active(self.cfg["enabled"])
             self.skip_item.set_active(self.cfg["skip_next"])
             self.sound_item.set_active(self.cfg["sound"])
+
+            until = squatslib.snoozed_until(self.cfg)
+            if until:
+                stamp = time.strftime("%H:%M", time.localtime(until))
+                self.snooze_root.set_label(f"Snooze (until {stamp})")
+            else:
+                self.snooze_root.set_label("Snooze")
+            self.snooze_cancel.set_sensitive(bool(until))
 
             interval = self.cfg["interval_minutes"]
             if interval in self.interval_items:
@@ -392,6 +426,28 @@ class Tray:
             self.cfg["offset_minutes"] = value
             self.save()
             squatslib.reschedule(self.cfg)
+        self.refresh()
+
+    def on_snooze(self, _item, mins):
+        if self.updating:
+            return
+        squatslib.start_snooze(self.cfg, mins)
+        self.refresh()
+
+    def on_snooze_custom(self, _item):
+        if self.updating:
+            return
+        options = squatslib.snooze_options(self.cfg)
+        value = ask_number("DoSquats", "Snooze for how many minutes?",
+                           options[0] if options else 10, 1, 240)
+        if value:
+            squatslib.start_snooze(self.cfg, value)
+        self.refresh()
+
+    def on_snooze_cancel(self, _item):
+        if self.updating:
+            return
+        squatslib.cancel_snooze(self.cfg, quiet=True)
         self.refresh()
 
     def on_reps(self, item, count):

@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 APP = "dosquats"
@@ -33,10 +34,13 @@ DEFAULTS = {
     "overlay_timeout": 45,       # seconds before the overlay dismisses itself
     "skip_next": False,
     "skip_when_locked": True,
+    "snooze_options": [10, 35],  # offered on the reminder itself
+    "snooze_until": 0,           # unix time; reminders stay quiet until then
     "tray_icon": "dosquats-symbolic",
 }
 
 TRAY = "dosquats-tray"
+SNOOZE = "dosquats-snooze"
 ICON_NAME = "dosquats-symbolic"
 OFFSET_LIMIT = 30
 
@@ -65,6 +69,60 @@ def warn(msg):
 def die(msg, code=1):
     warn(msg)
     sys.exit(code)
+
+
+# ------------------------------------------------------------------ snooze ----
+
+def snooze_options(cfg):
+    """Sanitised snooze presets — the buttons the reminder itself offers."""
+    out = []
+    for value in cfg.get("snooze_options") or []:
+        try:
+            minutes = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= minutes <= 240 and minutes not in out:
+            out.append(minutes)
+    return out
+
+
+def snoozed_until(cfg):
+    """Unix time the current snooze runs to, or 0 if not snoozed."""
+    try:
+        until = float(cfg.get("snooze_until") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return until if until > time.time() else 0
+
+
+def start_snooze(cfg, minutes):
+    """Silence reminders for `minutes`, then fire one via a transient timer."""
+    minutes = max(1, int(minutes))
+    cancel_snooze(cfg, quiet=True)
+    cfg["snooze_until"] = time.time() + minutes * 60
+    save_config(cfg)
+    subprocess.run(
+        ["systemd-run", "--user", "--collect",
+         f"--unit={SNOOZE}",
+         f"--on-active={minutes}min",
+         "--timer-property=AccuracySec=1s",
+         "--description=DoSquats snoozed reminder",
+         str(SELF), "snooze-fire"],
+        check=False, capture_output=True,
+    )
+    return minutes
+
+
+def cancel_snooze(cfg, quiet=False):
+    """Drop the pending snooze, if any. Safe to call when nothing is snoozed."""
+    subprocess.run(["systemctl", "--user", "stop",
+                    f"{SNOOZE}.timer", f"{SNOOZE}.service"],
+                   check=False, capture_output=True)
+    if cfg.get("snooze_until"):
+        cfg["snooze_until"] = 0
+        save_config(cfg)
+    if not quiet:
+        print("snooze cancelled")
 
 
 # ----------------------------------------------------------- reminder UI ----
@@ -99,24 +157,55 @@ def message(cfg):
     return f"Do {cfg['reps']} {cfg['exercise']}"
 
 
+def notify_supports_actions():
+    """libnotify ≥ 0.7.10 can wait for a button press and print its key."""
+    try:
+        out = subprocess.run(["notify-send", "--help"], capture_output=True,
+                             text=True, timeout=5)
+        return "--action" in (out.stdout + out.stderr)
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def show_banner(cfg):
-    subprocess.run([
+    """Show the notification. Returns snooze minutes if a button was pressed."""
+    wait = max(int(cfg["overlay_timeout"]), 5)
+    cmd = [
         "notify-send",
         "-a", "DoSquats",
         "-i", "alarm-symbolic",
         "-u", "normal",
-        "-t", str(max(cfg["overlay_timeout"], 5) * 1000),
-        "🏋️ Time to move",
-        message(cfg),
-    ], check=False)
+        "-t", str(wait * 1000),
+    ]
+    options = snooze_options(cfg)
+    body = ["🏋️ Time to move", message(cfg)]
+
+    if options and notify_supports_actions():
+        actions = []
+        for minutes in options:
+            actions += ["-A", f"{minutes}=Snooze {minutes} min"]
+        try:
+            out = subprocess.run(cmd + actions + body, capture_output=True,
+                                 text=True, timeout=wait + 10).stdout.strip()
+            return int(out) if out.isdigit() else None
+        except subprocess.TimeoutExpired:
+            return None            # left sitting in the message list — let it go
+        except (OSError, subprocess.SubprocessError):
+            pass                   # fall through to the plain notification
+
+    subprocess.run(cmd + body, check=False)
+    return None
 
 
 def show_overlay(cfg):
+    """Show the fullscreen overlay. Returns snooze minutes if one was chosen."""
     import gi
     gi.require_version("Gtk", "4.0")
     from gi.repository import Gtk, Gdk, GLib
 
     timeout = max(int(cfg["overlay_timeout"]), 3)
+    options = snooze_options(cfg)[:4]
+    chosen = {"snooze": None}
     css = b"""
     window.dosquats { background-color: #101014; }
     .headline { font-size: 96px; font-weight: 800; color: #f5f5f7; }
@@ -124,6 +213,11 @@ def show_overlay(cfg):
     .hint     { font-size: 20px; color: #8e8e93; }
     progressbar.countdown trough { min-height: 6px; background: #2c2c30; }
     progressbar.countdown progress { min-height: 6px; background: #ff9f0a; }
+    button.snooze {
+        font-size: 20px; padding: 12px 22px; border: 0;
+        color: #f5f5f7; background: #2c2c30;
+    }
+    button.snooze:hover { background: #3a3a40; }
     """
 
     def on_activate(app):
@@ -140,8 +234,6 @@ def show_overlay(cfg):
         emoji.add_css_class("emoji")
         headline = Gtk.Label(label=message(cfg))
         headline.add_css_class("headline")
-        hint = Gtk.Label(label="Esc, Space or click to dismiss")
-        hint.add_css_class("hint")
 
         bar = Gtk.ProgressBar()
         bar.add_css_class("countdown")
@@ -149,8 +241,27 @@ def show_overlay(cfg):
         bar.set_size_request(420, -1)
         bar.set_halign(Gtk.Align.CENTER)
 
-        for w in (emoji, headline, bar, hint):
+        for w in (emoji, headline, bar):
             box.append(w)
+
+        def snooze(minutes):
+            chosen["snooze"] = minutes
+            win.close()
+
+        if options:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            row.set_halign(Gtk.Align.CENTER)
+            for n, minutes in enumerate(options, start=1):
+                btn = Gtk.Button(label=f"Snooze {minutes} min  ({n})")
+                btn.add_css_class("snooze")
+                btn.connect("clicked", lambda _b, m=minutes: snooze(m))
+                row.append(btn)
+            box.append(row)
+
+        hint = Gtk.Label(label="Esc, Space or click to dismiss"
+                         + ("  ·  1–%d to snooze" % len(options) if options else ""))
+        hint.add_css_class("hint")
+        box.append(hint)
         win.set_child(box)
 
         state = {"left": float(timeout)}
@@ -165,15 +276,30 @@ def show_overlay(cfg):
 
         GLib.timeout_add(100, tick)
 
+        def on_key(_controller, keyval, *_a):
+            if options and Gdk.KEY_1 <= keyval < Gdk.KEY_1 + len(options):
+                snooze(options[keyval - Gdk.KEY_1])
+            elif keyval in (Gdk.KEY_Escape, Gdk.KEY_space,
+                            Gdk.KEY_Return, Gdk.KEY_q):
+                win.close()
+            return True
+
         keys = Gtk.EventControllerKey()
-        keys.connect("key-pressed", lambda _c, keyval, *_a: (
-            win.close() if keyval in (Gdk.KEY_Escape, Gdk.KEY_space,
-                                      Gdk.KEY_Return, Gdk.KEY_q) else None,
-            True)[1])
+        keys.connect("key-pressed", on_key)
         win.add_controller(keys)
 
+        def on_click(_gesture, _n_press, x, y):
+            # Clicking anywhere dismisses — except on a snooze button, which
+            # needs the release to reach its own handler.
+            widget = win.pick(x, y, Gtk.PickFlags.DEFAULT)
+            while widget is not None:
+                if isinstance(widget, Gtk.Button):
+                    return
+                widget = widget.get_parent()
+            win.close()
+
         click = Gtk.GestureClick()
-        click.connect("pressed", lambda *_a: win.close())
+        click.connect("pressed", on_click)
         win.add_controller(click)
 
         win.present()
@@ -186,15 +312,28 @@ def show_overlay(cfg):
     app = Gtk.Application(application_id="io.github.dosquats.Reminder")
     app.connect("activate", on_activate)
     app.run([])
+    return chosen["snooze"]
 
 
-def remind(cfg, forced=False):
+def remind(cfg, forced=False, from_snooze=False):
     if not (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")):
         die("no graphical session — nothing to show")
+
+    if from_snooze:
+        # The snooze has come due; clear it before anything else so a reminder
+        # dismissed without snoozing leaves no stale window behind.
+        cfg["snooze_until"] = 0
+        save_config(cfg)
 
     if not forced:
         if not cfg["enabled"]:
             return
+        if not from_snooze:
+            until = snoozed_until(cfg)
+            if until:
+                print("snoozed until "
+                      f"{time.strftime('%H:%M', time.localtime(until))}")
+                return
         if cfg["skip_next"]:
             cfg["skip_next"] = False
             save_config(cfg)
@@ -215,9 +354,16 @@ def remind(cfg, forced=False):
 
     play_sound(cfg)
     if cfg["style"] == "banner":
-        show_banner(cfg)
+        snooze = show_banner(cfg)
     else:
-        show_overlay(cfg)
+        snooze = show_overlay(cfg)
+
+    if snooze:
+        # Reload first: the overlay may have been up while the tray or CLI
+        # wrote other settings.
+        cfg = load_config()
+        start_snooze(cfg, snooze)
+        print(f"snoozed for {snooze} min")
 
 
 # ------------------------------------------------------------- scheduling ----
@@ -299,7 +445,8 @@ def cmd_install(cfg, _args):
     print("starts automatically at login. `squats status` to check.")
 
 
-def cmd_uninstall(_cfg, _args):
+def cmd_uninstall(cfg, _args):
+    cancel_snooze(cfg, quiet=True)
     systemctl("disable", "--now", f"{APP}.timer", check=False)
     for unit in (f"{APP}.timer", f"{APP}.service"):
         (UNIT_DIR / unit).unlink(missing_ok=True)
@@ -424,6 +571,31 @@ def cmd_offset(cfg, args):
     print(f"offset set to {offset:+d} min — fires at {times}")
 
 
+def cmd_snooze(cfg, args):
+    if args and args[0] in ("cancel", "off", "clear"):
+        cancel_snooze(cfg)
+        return
+    options = snooze_options(cfg)
+    if args:
+        try:
+            minutes = int(args[0])
+        except ValueError:
+            die(f"not a number: {args[0]}")
+    elif options:
+        minutes = options[0]
+    else:
+        die("usage: squats snooze [minutes] | squats snooze cancel")
+    if not 1 <= minutes <= 240:
+        die("snooze must be 1–240 minutes")
+    start_snooze(cfg, minutes)
+    until = time.strftime("%H:%M", time.localtime(cfg["snooze_until"]))
+    print(f"snoozed for {minutes} min — next reminder at {until}")
+
+
+def cmd_snooze_fire(cfg, _args):
+    remind(cfg, from_snooze=True)
+
+
 def cmd_reps(cfg, args):
     if not args:
         die("usage: squats reps <count>")
@@ -467,6 +639,10 @@ def cmd_status(cfg, _args):
         f":{m:02d}" for m in fire_minutes(cfg["interval_minutes"], offset)))
     if cfg["skip_next"]:
         print("next reminder: skipped")
+    until = snoozed_until(cfg)
+    if until:
+        print(f"snoozed until {time.strftime('%H:%M', time.localtime(until))} "
+              f"({int((until - time.time()) / 60) + 1} min left)")
     print()
     sys.stdout.flush()
     subprocess.run(["systemctl", "--user", "list-timers", f"{APP}.timer",
@@ -486,6 +662,7 @@ COMMANDS = {
     "tray": cmd_tray, "tray-install": cmd_tray_install,
     "tray-uninstall": cmd_tray_uninstall,
     "on": cmd_on, "off": cmd_off, "skip": cmd_skip,
+    "snooze": cmd_snooze, "snooze-fire": cmd_snooze_fire,
     "every": cmd_every, "offset": cmd_offset,
     "reps": cmd_reps, "exercise": cmd_exercise,
     "style": cmd_style, "sound": cmd_sound,
@@ -505,6 +682,8 @@ squats — clock-aligned exercise reminders for GNOME/Fedora
   squats test               show a reminder right now
   squats on | off           enable / disable reminders
   squats skip               skip the next reminder only
+  squats snooze [minutes]   quiet now, remind again later (default: first preset)
+  squats snooze cancel      drop a pending snooze
 
   squats every <minutes>    5–60, in steps of 5
   squats offset <minutes>   shift off the clock, e.g. -5 (:55) or +5 (:05)
