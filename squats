@@ -24,6 +24,7 @@ SELF = Path(__file__).resolve()
 DEFAULTS = {
     "enabled": True,
     "interval_minutes": 20,
+    "offset_minutes": 0,         # shift off the clock alignment, e.g. -5 or +5
     "reps": 20,
     "exercise": "squats",
     "style": "overlay",          # "overlay" (blocking) or "banner" (notification)
@@ -37,6 +38,7 @@ DEFAULTS = {
 
 TRAY = "dosquats-tray"
 ICON_NAME = "dosquats-symbolic"
+OFFSET_LIMIT = 30
 
 
 # ---------------------------------------------------------------- config ----
@@ -220,11 +222,31 @@ def remind(cfg, forced=False):
 
 # ------------------------------------------------------------- scheduling ----
 
-def on_calendar(minutes):
-    """systemd OnCalendar= expression aligned to the wall clock."""
-    if minutes >= 60:
-        return "*-*-* *:00:00"
-    return f"*:0/{minutes}"
+def get_offset(cfg):
+    """Hand-edited configs can hold anything; clamp to something schedulable."""
+    try:
+        offset = int(cfg.get("offset_minutes", 0))
+    except (TypeError, ValueError):
+        return 0
+    return max(-OFFSET_LIMIT, min(offset, OFFSET_LIMIT))
+
+
+def fire_minutes(interval, offset=0):
+    """The minutes past the hour a reminder lands on."""
+    interval = max(1, min(int(interval), 60))
+    base = range(0, 60, interval)
+    return sorted({(m + int(offset)) % 60 for m in base})
+
+
+def on_calendar(interval, offset=0):
+    """systemd OnCalendar= expression, clock-aligned and offset by `offset`.
+
+    Spelled out as an explicit minute list rather than `*:0/N`, because a
+    negative offset has to wrap into the previous hour (hourly at -5 fires
+    at :55) and `/N` can only count up from a start minute.
+    """
+    minutes = ",".join(f"{m:02d}" for m in fire_minutes(interval, offset))
+    return f"*-*-* *:{minutes}:00"
 
 
 def systemctl(*args, check=True):
@@ -241,12 +263,14 @@ Description=DoSquats exercise reminder
 Type=oneshot
 ExecStart={SELF} remind
 """)
+    offset = get_offset(cfg)
+    shift = f" ({offset:+d} min)" if offset else ""
     (UNIT_DIR / f"{APP}.timer").write_text(f"""\
 [Unit]
-Description=DoSquats reminder every {cfg['interval_minutes']} minutes
+Description=DoSquats reminder every {cfg['interval_minutes']} minutes{shift}
 
 [Timer]
-OnCalendar={on_calendar(cfg['interval_minutes'])}
+OnCalendar={on_calendar(cfg['interval_minutes'], offset)}
 AccuracySec=1s
 Persistent=true
 Unit={APP}.service
@@ -268,7 +292,9 @@ def cmd_install(cfg, _args):
     save_config(cfg)
     write_units(cfg)
     systemctl("enable", "--now", f"{APP}.timer")
-    print(f"installed — reminders every {cfg['interval_minutes']} min, "
+    offset = get_offset(cfg)
+    print(f"installed — reminders every {cfg['interval_minutes']} min"
+          f"{f' ({offset:+d} min offset)' if offset else ''}, "
           f"style: {cfg['style']}")
     print("starts automatically at login. `squats status` to check.")
 
@@ -375,10 +401,27 @@ def cmd_every(cfg, args):
     cfg["interval_minutes"] = minutes
     save_config(cfg)
     reschedule(cfg)
-    print(f"interval set to {minutes} min ({on_calendar(minutes)})")
+    print(f"interval set to {minutes} min ({on_calendar(minutes, get_offset(cfg))})")
     if 60 % minutes:
-        warn(f"{minutes} does not divide 60 — alignment restarts each hour "
-             f"(:00, :{minutes:02d}, :{2 * minutes:02d}, …)")
+        warn(f"{minutes} does not divide 60 — alignment restarts each hour")
+
+
+def cmd_offset(cfg, args):
+    if not args:
+        die(f"usage: squats offset <minutes>  (-{OFFSET_LIMIT}–+{OFFSET_LIMIT}, "
+            f"e.g. -5 to fire 5 min before the hour)")
+    try:
+        offset = int(args[0].lstrip("+"))
+    except ValueError:
+        die(f"not a number: {args[0]}")
+    if abs(offset) > OFFSET_LIMIT:
+        die(f"offset must be between -{OFFSET_LIMIT} and +{OFFSET_LIMIT} minutes")
+    cfg["offset_minutes"] = offset
+    save_config(cfg)
+    reschedule(cfg)
+    times = ", ".join(f":{m:02d}" for m in
+                      fire_minutes(cfg["interval_minutes"], offset))
+    print(f"offset set to {offset:+d} min — fires at {times}")
 
 
 def cmd_reps(cfg, args):
@@ -415,9 +458,13 @@ def cmd_sound(cfg, args):
 
 def cmd_status(cfg, _args):
     state = "enabled" if cfg["enabled"] else "disabled"
+    offset = get_offset(cfg)
+    shift = f" offset {offset:+d} min," if offset else ""
     print(f"DoSquats: {state} — {message(cfg)} every "
-          f"{cfg['interval_minutes']} min, style: {cfg['style']}, "
+          f"{cfg['interval_minutes']} min,{shift} style: {cfg['style']}, "
           f"sound: {'on' if cfg['sound'] else 'off'}")
+    print("fires at " + ", ".join(
+        f":{m:02d}" for m in fire_minutes(cfg["interval_minutes"], offset)))
     if cfg["skip_next"]:
         print("next reminder: skipped")
     print()
@@ -439,7 +486,8 @@ COMMANDS = {
     "tray": cmd_tray, "tray-install": cmd_tray_install,
     "tray-uninstall": cmd_tray_uninstall,
     "on": cmd_on, "off": cmd_off, "skip": cmd_skip,
-    "every": cmd_every, "reps": cmd_reps, "exercise": cmd_exercise,
+    "every": cmd_every, "offset": cmd_offset,
+    "reps": cmd_reps, "exercise": cmd_exercise,
     "style": cmd_style, "sound": cmd_sound,
     "status": cmd_status, "test": cmd_test, "remind": cmd_remind,
 }
@@ -459,6 +507,7 @@ squats — clock-aligned exercise reminders for GNOME/Fedora
   squats skip               skip the next reminder only
 
   squats every <minutes>    5–60, in steps of 5
+  squats offset <minutes>   shift off the clock, e.g. -5 (:55) or +5 (:05)
   squats reps <count>       how many reps to ask for
   squats exercise <name>    e.g. pushups, stretches
   squats style overlay|banner

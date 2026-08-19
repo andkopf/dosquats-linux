@@ -32,6 +32,7 @@ squats on | off           enable / disable reminders
 squats skip               skip the next reminder only
 
 squats every <minutes>    5–60, in steps of 5
+squats offset <minutes>   shift off the clock, e.g. -5 or +5
 squats reps <count>       how many reps to ask for
 squats exercise <name>    e.g. pushups, stretches
 squats style overlay|banner
@@ -40,6 +41,16 @@ squats sound on|off
 
 Config lives in `~/.config/dosquats/config.json`; every key is editable there too,
 including `overlay_timeout`, `sound_file`, `skip_when_locked`, and `tray_icon`.
+
+## Offset
+
+Reminders land on the clock, which is exactly when meetings start. An offset
+shifts every fire time, so `squats offset -5` on an hourly interval moves the
+reminder to `:55` — before the call, not on top of it — and `+5` moves it to
+`:05`. It applies to any interval: at 20 minutes, `-5` fires at `:15, :35, :55`.
+
+The offset rewrites the timer's `OnCalendar=` as an explicit minute list, so a
+negative offset wraps into the previous hour instead of drifting.
 
 ## Panel icon (the menu bar equivalent)
 
@@ -55,8 +66,8 @@ Log out and back in once if no icon appears — that's the extension activating,
 not the app failing.
 
 You get a barbell panel icon whose menu mirrors the macOS one: next fire time,
-enable/disable, skip next, interval, reps, exercise, overlay/banner, sound, and
-"Remind me now".
+enable/disable, skip next, interval, offset, reps, exercise, overlay/banner,
+sound, and "Remind me now".
 
 Reps and exercise offer presets plus a **Custom…** entry for anything else. The
 submenu headers show the current value (`Reps (20)`), and a value set from the

@@ -48,6 +48,7 @@ squatslib = importlib.util.module_from_spec(
 _loader.exec_module(squatslib)
 
 INTERVALS = [5, 10, 15, 20, 30, 45, 60]
+OFFSETS = [-10, -5, 0, 5, 10]
 REPS = [5, 10, 15, 20, 25, 30, 40, 50]
 EXERCISES = ["squats", "pushups", "lunges", "stretches"]
 
@@ -199,6 +200,24 @@ class Tray:
         menu.append(interval_root)
         self.interval_root = interval_root
 
+        # Offset submenu — meetings start on the hour, so fire just off it
+        self.offset_root = Gtk.MenuItem(label="Offset")
+        offset_menu = Gtk.Menu()
+        self.offset_items = {}
+        group = []
+        for mins in OFFSETS:
+            label = "On the clock" if mins == 0 else f"{mins:+d} min"
+            item = Gtk.RadioMenuItem.new_with_label(group, label)
+            group = item.get_group()
+            item.connect("toggled", self.on_offset, mins)
+            offset_menu.append(item)
+            self.offset_items[mins] = item
+        self.offset_custom = Gtk.RadioMenuItem.new_with_label(group, "Custom…")
+        self.offset_custom.connect("toggled", self.on_offset_custom)
+        offset_menu.append(self.offset_custom)
+        self.offset_root.set_submenu(offset_menu)
+        menu.append(self.offset_root)
+
         # Reps submenu — presets plus a custom prompt
         self.reps_root = Gtk.MenuItem(label="Reps")
         reps_menu = Gtk.Menu()
@@ -280,6 +299,16 @@ class Tray:
                 self.interval_items[interval].set_active(True)
             self.interval_root.set_label(f"Interval ({interval} min)")
 
+            offset = squatslib.get_offset(self.cfg)
+            self.offset_root.set_label(
+                f"Offset ({offset:+d} min)" if offset else "Offset (none)")
+            if offset in self.offset_items:
+                self.offset_custom.set_label("Custom…")
+                self.offset_items[offset].set_active(True)
+            else:
+                self.offset_custom.set_label(f"Custom… ({offset:+d})")
+                self.offset_custom.set_active(True)
+
             style = self.cfg.get("style", "overlay")
             if style in self.style_items:
                 self.style_items[style].set_active(True)
@@ -343,6 +372,26 @@ class Tray:
         self.cfg["interval_minutes"] = mins
         self.save()
         squatslib.reschedule(self.cfg)
+        self.refresh()
+
+    def on_offset(self, item, mins):
+        if self.updating or not item.get_active():
+            return
+        self.cfg["offset_minutes"] = mins
+        self.save()
+        squatslib.reschedule(self.cfg)
+        self.refresh()
+
+    def on_offset_custom(self, item):
+        if self.updating or not item.get_active():
+            return
+        limit = squatslib.OFFSET_LIMIT
+        value = ask_number("DoSquats", "Minutes off the clock alignment:",
+                           squatslib.get_offset(self.cfg), -limit, limit)
+        if value is not None:
+            self.cfg["offset_minutes"] = value
+            self.save()
+            squatslib.reschedule(self.cfg)
         self.refresh()
 
     def on_reps(self, item, count):
