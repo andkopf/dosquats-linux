@@ -251,19 +251,18 @@ def show_overlay(cfg):
         if options:
             row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
             row.set_halign(Gtk.Align.CENTER)
-            for n, minutes in enumerate(options, start=1):
-                btn = Gtk.Button(label=f"Snooze {minutes} min  ({n})")
+            for minutes in options:
+                btn = Gtk.Button(label=f"Snooze {minutes} min")
                 btn.add_css_class("snooze")
-                # A focusable button would swallow Space and Return, which the
-                # hint promises will dismiss — so snoozing is mouse or number
-                # key only, and the keyboard never lands on a snooze by default.
+                # Snoozing is a deliberate mouse click, never a keystroke: a
+                # focusable button would take Space and Return, which dismiss.
                 btn.set_can_focus(False)
                 btn.connect("clicked", lambda _b, m=minutes: snooze(m))
                 row.append(btn)
             box.append(row)
 
         hint = Gtk.Label(label="Esc, Space or click to dismiss"
-                         + ("  ·  1–%d to snooze" % len(options) if options else ""))
+                         + ("  ·  click a button to snooze" if options else ""))
         hint.add_css_class("hint")
         box.append(hint)
         win.set_child(box)
@@ -281,10 +280,10 @@ def show_overlay(cfg):
         GLib.timeout_add(100, tick)
 
         def on_key(_controller, keyval, *_a):
-            if options and Gdk.KEY_1 <= keyval < Gdk.KEY_1 + len(options):
-                snooze(options[keyval - Gdk.KEY_1])
-            elif keyval in (Gdk.KEY_Escape, Gdk.KEY_space,
-                            Gdk.KEY_Return, Gdk.KEY_q):
+            # No key snoozes. Acknowledging is the reflex action, so every key
+            # that could plausibly mean "done" dismisses.
+            if keyval in (Gdk.KEY_Escape, Gdk.KEY_space,
+                          Gdk.KEY_Return, Gdk.KEY_q):
                 win.close()
             return True
 

@@ -56,8 +56,10 @@ negative offset wraps into the previous hour instead of drifting.
 
 ## Snooze
 
-Reminders carry snooze buttons — on the overlay as buttons (or keys `1`/`2`),
-on a notification banner as actions. Snoozing does two things: it silences the
+Reminders carry snooze buttons — on the overlay, and on a notification banner as
+actions. Snoozing takes a deliberate mouse click: no key triggers it, and every
+dismiss key (`Esc`, `Space`, `Return`, `q`) closes the reminder as it always did.
+Snoozing does two things: it silences the
 regular reminders that fall inside the window, and it schedules one reminder for
 the end of it via a transient systemd timer. Defaults are 10 and 35 minutes —
 long enough to see out the rest of a meeting — and they're the `snooze_options`
