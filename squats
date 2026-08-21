@@ -254,6 +254,10 @@ def show_overlay(cfg):
             for n, minutes in enumerate(options, start=1):
                 btn = Gtk.Button(label=f"Snooze {minutes} min  ({n})")
                 btn.add_css_class("snooze")
+                # A focusable button would swallow Space and Return, which the
+                # hint promises will dismiss — so snoozing is mouse or number
+                # key only, and the keyboard never lands on a snooze by default.
+                btn.set_can_focus(False)
                 btn.connect("clicked", lambda _b, m=minutes: snooze(m))
                 row.append(btn)
             box.append(row)
