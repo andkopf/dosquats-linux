@@ -197,6 +197,9 @@ def show_banner(cfg):
     return None
 
 
+GRACE_US = 1_500_000   # overlay ignores keys and clicks for its first 1.5 s
+
+
 def show_overlay(cfg):
     """Show the fullscreen overlay. Returns snooze minutes if one was chosen."""
     import gi
@@ -224,7 +227,26 @@ def show_overlay(cfg):
         win = Gtk.ApplicationWindow(application=app)
         win.add_css_class("dosquats")
         win.set_decorated(False)
-        win.fullscreen()
+        # Maximize, never fullscreen: a fullscreen window destroyed while
+        # PaperWM's fullscreen timer is pending segfaults gnome-shell (mutter
+        # meta_window_unmake_fullscreen on a dead window).
+        # PaperWM floats this window (winprops scratch_layer) and drops a
+        # maximize sent before map, so start at monitor size and maximize
+        # again once mapped.
+        monitors = Gdk.Display.get_default().get_monitors()
+        if monitors.get_n_items():
+            geo = monitors.get_item(0).get_geometry()
+            win.set_default_size(geo.width, geo.height)
+        win.maximize()
+        win.connect("map", lambda w: GLib.idle_add(
+            lambda: (w.maximize(), GLib.SOURCE_REMOVE)[1]))
+
+        # The overlay takes focus the moment it appears, so the keystroke the
+        # user was already typing must not dismiss it. Ignore input briefly.
+        shown_at = {"t": GLib.get_monotonic_time()}
+
+        def armed():
+            return GLib.get_monotonic_time() - shown_at["t"] >= GRACE_US
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         box.set_valign(Gtk.Align.CENTER)
@@ -282,6 +304,8 @@ def show_overlay(cfg):
         def on_key(_controller, keyval, *_a):
             # No key snoozes. Acknowledging is the reflex action, so every key
             # that could plausibly mean "done" dismisses.
+            if not armed():
+                return True
             if keyval in (Gdk.KEY_Escape, Gdk.KEY_space,
                           Gdk.KEY_Return, Gdk.KEY_q):
                 win.close()
@@ -294,6 +318,8 @@ def show_overlay(cfg):
         def on_click(_gesture, _n_press, x, y):
             # Clicking anywhere dismisses — except on a snooze button, which
             # needs the release to reach its own handler.
+            if not armed():
+                return
             widget = win.pick(x, y, Gtk.PickFlags.DEFAULT)
             while widget is not None:
                 if isinstance(widget, Gtk.Button):
