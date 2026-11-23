@@ -7,7 +7,7 @@ Clock-aligned reminders to get up and move.
 
 The original is a macOS menu bar app written in Swift/AppKit, which doesn't port —
 so this rebuilds the same behavior on native Linux pieces: a **systemd user timer**
-for scheduling and a **GTK4** fullscreen overlay (or a plain notification) for the
+for scheduling and a **GTK4** screen-filling overlay (or a plain notification) for the
 reminder itself. It's an independent reimplementation, not a fork; no original
 source is reused.
 
@@ -58,7 +58,7 @@ negative offset wraps into the previous hour instead of drifting.
 
 Reminders carry snooze buttons — on the overlay, and on a notification banner as
 actions. Snoozing takes a deliberate mouse click: no key triggers it, and every
-dismiss key (`Esc`, `Space`, `Return`, `q`) closes the reminder as it always did.
+dismiss key (`Esc`, `Space`, `Return`, `q`) closes the reminder. For the first 1.5 seconds the overlay ignores keys, clicks and the snooze buttons, so a keystroke you were already typing when it appeared can't dismiss it unseen.
 Snoozing does two things: it silences the
 regular reminders that fall inside the window, and it schedules one reminder for
 the end of it via a transient systemd timer. Defaults are 10 and 35 minutes —
@@ -105,7 +105,7 @@ for changes, so the CLI and the menu stay in sync in both directions.
 |---|---|
 | Clock-aligned interval | `OnCalendar=*:0/20` — fires at :00, :20, :40 |
 | Missed reminders after sleep | `Persistent=true` — fires on resume |
-| Full-screen blocking overlay | GTK4 fullscreen window, dismiss with Esc/Space/click |
+| Full-screen blocking overlay | Maximized, undecorated GTK4 window, dismiss with Esc/Space/click (see [PaperWM](#paperwm)) |
 | Banner style | `notify-send` |
 | Sound | `paplay` on a freedesktop sound |
 | Menu bar icon + toggles | Panel icon via AppIndicator — see below |
@@ -121,6 +121,20 @@ you pick one.
 
 If the screen is locked, the reminder is skipped rather than queued, so overlays
 don't stack up while you're away. Set `"skip_when_locked": false` to disable.
+
+### PaperWM
+
+The overlay is maximized, not fullscreen. Under the PaperWM tiling extension, a fullscreen window that closes while PaperWM is still handling it can crash gnome-shell (a segfault in mutter's `meta_window_unmake_fullscreen`), which takes your whole session down. The trade-off: on stock GNOME the top bar and dock stay visible, and the overlay isn't kept above other windows the way a fullscreen one is.
+
+PaperWM tiles new windows, so it would open the overlay as a half-width column. Add a rule that floats it instead, keeping any rules you already have in the list:
+
+```
+gsettings --schemadir ~/.local/share/gnome-shell/extensions/paperwm@paperwm.github.com/schemas \
+  set org.gnome.shell.extensions.paperwm winprops \
+  "['{\"wm_class\":\"io.github.dosquats.Reminder\",\"scratch_layer\":true}']"
+```
+
+Floating, the overlay opens at the size of your first monitor and maximizes itself once it's on screen.
 
 ## Uninstall
 

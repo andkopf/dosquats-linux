@@ -201,7 +201,7 @@ GRACE_US = 1_500_000   # overlay ignores keys and clicks for its first 1.5 s
 
 
 def show_overlay(cfg):
-    """Show the fullscreen overlay. Returns snooze minutes if one was chosen."""
+    """Show the maximized overlay. Returns snooze minutes if one was chosen."""
     import gi
     gi.require_version("Gtk", "4.0")
     from gi.repository import Gtk, Gdk, GLib
@@ -267,6 +267,8 @@ def show_overlay(cfg):
             box.append(w)
 
         def snooze(minutes):
+            if not armed():
+                return
             chosen["snooze"] = minutes
             win.close()
 
